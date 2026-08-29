@@ -2,52 +2,127 @@
 <html>
 <head>
   <title>Smart City GIS Dashboard</title>
+  <!-- Deck.gl & MapLibre Core -->
   <script src="https://unpkg.com/deck.gl@latest/dist.min.js"></script>
   <script src="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.js"></script>
   <link href="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.css" rel="stylesheet" />
+  
+  <!-- Chart.js for Analytics -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  
   <style>
-    body { margin: 0; padding: 0; font-family: sans-serif; }
+    body { margin: 0; padding: 0; font-family: sans-serif; background: #111; }
     #container { width: 100vw; height: 100vh; position: relative; }
-    #panel { position: absolute; top: 15px; left: 15px; background: white; padding: 15px; z-index: 1; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    #panel { 
+      position: absolute; 
+      top: 15px; 
+      left: 15px; 
+      background: white; 
+      padding: 20px; 
+      z-index: 1; 
+      border-radius: 8px; 
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3); 
+      width: 300px;
+    }
+    canvas { margin-top: 15px; }
   </style>
 </head>
 <body>
+  
+  <!-- Analytics Dashboard Panel -->
   <div id="panel">
-    <h3>Live Hazard Map</h3>
-    <p>Hazards Detected: <strong id="count">0</strong></p>
+    <h3 style="margin-top: 0;">Live Hazard Map</h3>
+    <p>Total Hazards Detected: <strong id="count">0</strong></p>
+    <canvas id="analyticsChart" width="250" height="200"></canvas>
   </div>
+  
+  <!-- Map Container -->
   <div id="container"></div>
 
   <script>
+    // Global variable to store the Chart instance
+    let myChart = null;
+
+    // Initialize the 3D Map
     const deckgl = new deck.DeckGL({
       container: 'container',
       mapStyle: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-      initialViewState: { longitude: 73.8567, latitude: 18.5204, zoom: 13, pitch: 45 },
-      controller: true,
+      initialViewState: { longitude: 73.8567, latitude: 18.5204, zoom: 13, pitch: 45, bearing: 0 },
+      controller: { dragRotate: true, doubleClickZoom: true, touchZoom: true }, // Enables 3D Rotation
       layers: []
     });
 
+    // Main function to fetch data and update UI
     async function loadHazards() {
-      const response = await fetch('/api/hazards/');
-      const data = await response.json();
-      
-      document.getElementById('count').innerText = data.length;
+      try {
+        const response = await fetch('/api/hazards/');
+        const data = await response.json();
+        
+        document.getElementById('count').innerText = data.length;
 
-      const layer = new deck.ScatterplotLayer({
-        id: 'hazard-layer',
-        data: data,
-        getPosition: d => [d.longitude, d.latitude],
-        getFillColor: d => d.hazard_type === 'pothole' ? [255, 50, 50] : [255, 200, 50],
-        getRadius: d => 15 + (d.report_count * 2), // Grows larger if reported multiple times
-        pickable: true,
-        autoHighlight: true,
-        onClick: ({object}) => alert(`${object.hazard_type.toUpperCase()} (Reported ${object.report_count} times)`)
-      });
+        // ==========================================
+        // 1. UPDATE DATA ANALYTICS CHART
+        // ==========================================
+        const hazardCounts = data.reduce((acc, curr) => {
+          acc[curr.hazard_type] = (acc[curr.hazard_type] || 0) + 1;
+          return acc;
+        }, {});
 
-      deckgl.setProps({ layers: [layer] });
+        if (!myChart) {
+          const ctx = document.getElementById('analyticsChart').getContext('2d');
+          myChart = new Chart(ctx, {
+            type: 'doughnut', // Changed to doughnut for a better dashboard look
+            data: {
+              labels: Object.keys(hazardCounts),
+              datasets: [{ 
+                label: 'Active Hazards', 
+                data: Object.values(hazardCounts), 
+                backgroundColor: ['#ff5252', '#ffc107', '#2196f3', '#9c27b0'] 
+              }]
+            }
+          });
+        } else {
+          myChart.data.labels = Object.keys(hazardCounts);
+          myChart.data.datasets[0].data = Object.values(hazardCounts);
+          myChart.update();
+        }
+
+        // ==========================================
+        // 2. CREATE GLOWING HEATMAP LAYER
+        // ==========================================
+        const heatmapLayer = new deck.HeatmapLayer({
+          id: 'hazard-heatmap',
+          data: data,
+          getPosition: d => [d.longitude, d.latitude],
+          getWeight: d => d.report_count,
+          radiusPixels: 50,
+          intensity: 1,
+          threshold: 0.05
+        });
+
+        // ==========================================
+        // 3. CREATE SCATTERPLOT PIN LAYER
+        // ==========================================
+        const scatterLayer = new deck.ScatterplotLayer({
+          id: 'hazard-layer',
+          data: data,
+          getPosition: d => [d.longitude, d.latitude],
+          getFillColor: d => d.hazard_type === 'pothole' ? [255, 50, 50] : [255, 200, 50],
+          getRadius: d => 15 + (d.report_count * 2), 
+          pickable: true,
+          autoHighlight: true,
+          onClick: ({object}) => alert(`${object.hazard_type.toUpperCase()}\nReported: ${object.report_count} times\nLast seen: ${new Date(object.last_seen).toLocaleString()}`)
+        });
+
+        // Push both layers to the map
+        deckgl.setProps({ layers: [heatmapLayer, scatterLayer] });
+
+      } catch (error) {
+        console.error("Error loading data:", error);
+      }
     }
 
-    // Refresh data every 5 seconds
+    // Refresh everything automatically every 5 seconds
     setInterval(loadHazards, 5000);
     loadHazards();
   </script>
